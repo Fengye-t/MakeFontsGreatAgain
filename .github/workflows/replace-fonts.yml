@@ -17,12 +17,12 @@ jobs:
       # 步骤2：自动获取并下载最新Release的Magisk模块
       - name: 自动获取并下载最新Release的Magisk模块
         run: |
-          # 获取最新Release的模块下载链接
-          MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip") and contains("MakeFontsGreatAgain")) | .browser_download_url')
+          # 获取最新Release的模块下载链接（简化筛选条件，仅筛选.zip文件）
+          MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
           
-          # 检查是否获取到有效链接
+          # 增加错误处理，检查是否获取到有效链接
           if [ -z "$MODULE_URL" ]; then
-            echo "❌ 错误：未找到符合条件的最新Release模块"
+            echo "❌ 错误：未找到符合条件的最新Release模块（.zip格式文件）"
             exit 1
           fi
           echo "✅ 找到最新模块下载链接：$MODULE_URL"
