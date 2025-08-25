@@ -1,63 +1,109 @@
-name: 替换模块字体文件并构建Release
+name: 手动上传字体替换（方式一：文件名一致）
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 手动触发（推荐，便于控制替换时机）
   push:
     tags:
-      - 'v*'
+      - 'v*' # 可选：推送v开头tag时自动触发
 
 jobs:
-  replace-and-build:
+  replace-fonts-manual:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出仓库
+      # 步骤1：拉取仓库代码（包含手动上传的new-fonts目录）
+      - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 新增步骤：从Release下载Magisk模块（需替换为实际模块URL或自动获取最新Release）
-      - name: 下载Release中的Magisk模块
+      # 步骤2：校验手动上传的字体是否存在（关键前置检查）
+      - name: 校验new-fonts目录及字体文件
         run: |
-          # 方案1：手动指定模块URL（推荐，从Release页面复制目标模块.zip的下载链接）
-          wget -O mfga-module.zip "https://github.com/Fengye-t/MakeFontsGreatAgain/releases/download/v15.9.0/MakeFontsGreatAgain-v15.9.0.zip"
-          # 方案2：自动获取最新Release的模块（若模块是最新Release的唯一.zip文件）
-          # wget -O mfga-module.zip $(curl -s https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
+          # 定义手动上传字体的存放路径（仓库根目录下的new-fonts）
+          SOURCE_FONT_DIR="./new-fonts"
+          # 定义需要替换的字体文件名列表（与目标文件名完全一致）
+          REQUIRED_FONTS=("NotoSansSC.ttf" "RobotoFlex-Regular.ttf" "Roboto-Regular.ttf" "Roboto-Italic.ttf")
           
-          # 创建临时目录，提取模块中的字体文件
-          mkdir -p ./extracted-module # 用于存放解压后的模块文件
-          unzip mfga-module.zip -d ./extracted-module # 解压模块到临时目录
-          echo "模块解压完成，字体文件路径（需确认）："
-          ls -l ./extracted-module/system/fonts/ # 验证字体是否在该路径（若路径不同需修改）
+          # 1. 检查new-fonts目录是否存在
+          if [ ! -d "$SOURCE_FONT_DIR" ]; then
+            echo "❌ 错误：未找到 $SOURCE_FONT_DIR 目录，请先在仓库根目录创建该目录并上传字体"
+            exit 1
+          fi
+          
+          # 2. 检查每个必需字体文件是否存在
+          for FONT in "${REQUIRED_FONTS[@]}"; do
+            if [ ! -f "$SOURCE_FONT_DIR/$FONT" ]; then
+              echo "❌ 错误：$SOURCE_FONT_DIR 目录中缺少必需字体 $FONT，请上传该文件"
+              exit 1
+            fi
+          done
+          
+          echo "✅ 所有必需字体文件均已找到，目录文件列表："
+          ls -l "$SOURCE_FONT_DIR"
 
-      - name: 准备新字体文件（从解压的模块中读取）
+      # 步骤3：替换字体（源文件名=目标文件名，直接覆盖）
+      - name: 替换字体文件（保持原命名）
         run: |
-          # 核心修改：从解压的模块目录（./extracted-module/system/fonts/）复制新字体到目标路径
-          # 1. 替换4个指定字体（保持原文件名不变）
-          cp ./extracted-module/system/fonts/NotoSansSC.ttf ./system/fonts/NotoSansSC.ttf
-          cp ./extracted-module/system/fonts/RobotoFlex-Regular.ttf ./system/fonts/RobotoFlex-Regular.ttf
-          cp ./extracted-module/system/fonts/Roboto-Regular.ttf ./system/fonts/Roboto-Regular.ttf
-          cp ./extracted-module/system/fonts/Roboto-Italic.ttf ./system/fonts/Roboto-Italic.ttf
+          # 统一定义路径（便于后续修改）
+          SOURCE_FONT_DIR="./new-fonts"       # 手动上传的字体源路径
+          TARGET_FONT_DIR="./system/fonts"    # 仓库模块的目标字体路径
           
-          # 2. 删除冗余文件
-          rm -f ./system/fonts/SysSans-En-Regular.ttf ./system/fonts/SysFont-Regular.ttf
+          # 1. 检查目标路径是否存在（确保模块结构正常）
+          if [ ! -d "$TARGET_FONT_DIR" ]; then
+            echo "❌ 错误：仓库中未找到目标字体目录 $TARGET_FONT_DIR"
+            exit 1
+          fi
           
-          # 3. 验证结果
-          echo "替换后目标目录文件列表："
-          ls -l ./system/fonts/
+          # 2. 批量替换4个字体（源文件名=目标文件名，直接覆盖）
+          echo "🔄 开始替换字体文件..."
+          cp -f "$SOURCE_FONT_DIR/NotoSansSC.ttf" "$TARGET_FONT_DIR/NotoSansSC.ttf"
+          cp -f "$SOURCE_FONT_DIR/RobotoFlex-Regular.ttf" "$TARGET_FONT_DIR/RobotoFlex-Regular.ttf"
+          cp -f "$SOURCE_FONT_DIR/Roboto-Regular.ttf" "$TARGET_FONT_DIR/Roboto-Regular.ttf"
+          cp -f "$SOURCE_FONT_DIR/Roboto-Italic.ttf" "$TARGET_FONT_DIR/Roboto-Italic.ttf"
+          
+          # 3. 删除2个冗余字体文件
+          echo "🗑️  删除冗余字体文件..."
+          rm -f "$TARGET_FONT_DIR/SysSans-En-Regular.ttf" "$TARGET_FONT_DIR/SysFont-Regular.ttf"
+          
+          # 4. 验证替换结果
+          echo "✅ 替换完成，目标目录最终文件列表："
+          ls -l "$TARGET_FONT_DIR"
 
-      - name: 构建模块压缩包（包含替换后的字体）
+      # 步骤4：重新打包Magisk模块
+      - name: 构建更新后的模块压缩包
         run: |
-          cd ./
-          zip -r MakeFontsGreatAgain-Module-Updated.zip ./system ./META-INF ./action.sh ./update.json # 按需保留模块必要文件
+          OUTPUT_ZIP="MakeFontsGreatAgain-Updated.zip" # 输出文件名
+          MODULE_ROOT="./" # 模块根目录（含system、META-INF等核心文件）
+          
+          # 打包模块必需文件（根据实际模块结构调整，META-INF为Magisk模块必需）
+          zip -r -q "$OUTPUT_ZIP" \
+            "$MODULE_ROOT/system" \
+            "$MODULE_ROOT/META-INF" \
+            "$MODULE_ROOT/action.sh" \
+            "$MODULE_ROOT/update.json"
+          
+          # 校验打包结果
+          if [ ! -f "$OUTPUT_ZIP" ]; then
+            echo "❌ 错误：模块打包失败"
+            exit 1
+          fi
+          echo "✅ 模块打包完成，文件大小：$(du -sh "$OUTPUT_ZIP" | cut -f1)"
 
+      # 步骤5：发布到GitHub Release
       - name: 发布到Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          release_name: 模块版本 ${{ github.ref_name }}（已从Release模块替换字体）
-          files: MakeFontsGreatAgain-Module-Updated.zip
+          release_name: 模块版本 ${{ github.ref_name }}（手动字体替换）
+          files: ${{ github.workspace }}/MakeFontsGreatAgain-Updated.zip
           body: |
-            1. 从Release下载Magisk模块并提取字体
-            2. 替换 ./system/fonts/ 下4个字体文件（保留原命名）
-            3. 删除 SysSans-En-Regular.ttf 和 SysFont-Regular.ttf
+            ## 手动字体替换说明
+            1. 从仓库 `./new-fonts/` 目录读取手动上传的字体（文件名与目标一致）
+            2. 替换 `./system/fonts/` 目录下4个字体文件：
+               - NotoSansSC.ttf
+               - RobotoFlex-Regular.ttf
+               - Roboto-Regular.ttf
+               - Roboto-Italic.ttf
+            3. 删除冗余文件：SysSans-En-Regular.ttf、SysFont-Regular.ttf
+            4. 重新打包为Magisk模块
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
