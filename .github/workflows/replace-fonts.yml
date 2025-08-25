@@ -1,0 +1,71 @@
+name: 替换模块字体文件并构建Release
+on:
+  # 触发时机：1.手动触发 2.推送tag时自动触发（可选）
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*' # 如推送 v15.9.0 这类tag时自动执行
+
+jobs:
+  replace-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      # 步骤1：拉取仓库代码
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1 # 仅拉取最新代码，加快速度
+
+      # 步骤2：准备替换用的新字体文件（关键步骤）
+      # 注意：需先将新字体文件上传到仓库（如 ./new-fonts/ 目录），或通过URL下载
+      - name: 准备新字体文件
+        run: |
+          # 1. 创建临时目录存放新字体（若从仓库读取，可跳过此步直接指定路径）
+          mkdir -p ./new-fonts
+          
+          # 2. 【核心替换逻辑】：将新字体文件复制到模块路径，保持原文件名不变
+          # 替换规则：新字体文件路径 → 模块目标路径（./system/fonts/），文件名必须与原文件一致
+          # 示例1：用新NotoSansSC.ttf替换模块中的文件
+          cp ./new-fonts/新NotoSansSC.ttf ./system/fonts/NotoSansSC.ttf
+          # 示例2：用新RobotoFlex-Regular.ttf替换模块中的文件
+          cp ./new-fonts/新RobotoFlex-Regular.ttf ./system/fonts/RobotoFlex-Regular.ttf
+          # 示例3：用新Roboto-Regular.ttf替换模块中的文件
+          cp ./new-fonts/新Roboto-Regular.ttf ./system/fonts/Roboto-Regular.ttf
+          # 示例4：用新Roboto-Italic.ttf替换模块中的文件
+          cp ./new-fonts/新Roboto-Italic.ttf ./system/fonts/Roboto-Italic.ttf
+          
+          # 3. 删除指定冗余文件（SysSans-En-Regular.ttf 和 SysFont-Regular.ttf）
+          rm -f ./system/fonts/SysSans-En-Regular.ttf ./system/fonts/SysFont-Regular.ttf
+          
+          # 4. 验证替换结果（可选，用于日志确认）
+          echo "替换后 ./system/fonts/ 目录文件列表："
+          ls -l ./system/fonts/
+
+      # 步骤3：（可选）构建模块压缩包（若模块需打包为zip发布）
+      - name: 构建模块压缩包
+        run: |
+          # 进入模块根目录（假设模块文件在仓库根目录，根据实际结构调整）
+          cd ./
+          # 打包模块文件为zip（包含替换后的fonts目录）
+          zip -r MakeFontsGreatAgain-Module.zip ./system ./META-INF ./action.sh ./update.json # 按需添加模块必要文件
+
+      # 步骤4：发布到GitHub Release（自动关联tag，或手动指定版本）
+      - name: 发布到Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 若触发方式为tag推送，自动使用tag作为版本；若手动触发，需手动输入版本
+          tag_name: ${{ github.ref_name }}
+          release_name: 模块版本 ${{ github.ref_name }}（已替换字体）
+          files: MakeFontsGreatAgain-Module.zip # 上传构建好的模块压缩包
+          body: |
+            本次Release已完成以下操作：
+            1. 替换 ./system/fonts/ 目录下字体文件（保持原命名）：
+               - NotoSansSC.ttf
+               - RobotoFlex-Regular.ttf
+               - Roboto-Regular.ttf
+               - Roboto-Italic.ttf
+            2. 删除冗余文件：
+               - SysSans-En-Regular.ttf
+               - SysFont-Regular.ttf
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GitHub自动生成的token，无需额外配置
