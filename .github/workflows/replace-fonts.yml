@@ -1,9 +1,8 @@
-name: 自动替换字体并发布Release（标签触发版，仅更新特定文件）
+name: 自动替换字体并发布Release（Release触发版）
 on:
-  push:
-    tags:
-      - 'v*'  # 推送v开头标签触发（如v1.0.0）
-  workflow_dispatch: # 手动触发
+  release:
+    types: [published] # 任意Release发布时自动触发（无需依赖标签）
+  workflow_dispatch: # 保留手动触发，方便测试
 
 jobs:
   replace-and-release:
@@ -15,71 +14,82 @@ jobs:
         with:
           fetch-depth: 1
 
-      # 步骤2：获取并解压最新Release模块
-      - name: 自动获取并下载最新Release的Magisk模块
+      # 步骤2：获取并解压最新Release的MFGA模块（筛选含MFGA的.zip）
+      - name: 自动获取并下载最新MFGA模块
         run: |
-          # 获取最新Release的.zip模块链接
-          MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
-          if [ -z "$MODULE_URL" ]; then
-            echo "❌ 未找到符合条件的模块"
+          # 获取最新Release中含"MFGA"关键词的.zip模块链接（精准匹配MFGA模块）
+          MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip") and contains("MFGA")) | .browser_download_url')
+          
+          # 双重校验：确保获取到含MFGA的有效模块链接
+          if [ -z "$MODULE_URL" ] || [ "$MODULE_URL" = "null" ]; then
+            echo "❌ 错误：最新Release中未找到含MFGA关键词的.zip模块"
             exit 1
           fi
-          echo "✅ 找到模块链接：$MODULE_URL"
+          echo "✅ 找到MFGA模块链接：$MODULE_URL"
           
-          # 下载并解压模块
-          wget -O mfga-latest-module.zip "$MODULE_URL" --no-verbose
+          # 下载模块（3次重试+30秒超时，确保下载完整）
+          wget -O mfga-latest-module.zip "$MODULE_URL" --no-verbose --tries=3 --timeout=30
+          
+          # 安装7z并解压模块
           sudo apt-get update && sudo apt-get install -y p7zip-full
           7z x mfga-latest-module.zip -oextracted-latest-module
           
-          # 验证字体目录
+          # 验证模块内字体目录存在（确保是有效MFGA字体模块）
           FONT_DIR="extracted-latest-module/system/fonts"
           if [ ! -d "$FONT_DIR" ]; then
-            echo "❌ 解压后无字体目录 $FONT_DIR"
+            echo "❌ 错误：MFGA模块解压后未找到字体目录 $FONT_DIR"
             exit 1
           fi
-          echo "✅ 字体目录存在"
+          echo "✅ MFGA模块字体目录存在，文件列表："
+          ls -l "$FONT_DIR"
 
-      # 步骤3：替换特定字体文件（仅更新目标字体）
-      - name: 替换特定字体文件
+      # 步骤3：替换特定字体文件（仅更新Roboto系列，不改动其他）
+      - name: 替换特定Roboto字体文件
         run: |
           EXTRACTED_FONT_DIR="extracted-latest-module/system/fonts"
           TARGET_FONT_DIR="system/fonts"
+          
+          # 确保目标字体目录存在
           mkdir -p "$TARGET_FONT_DIR"
           
-          # 复制需要替换的Roboto字体
+          # 仅复制需要替换的3个Roboto字体（不新增、不删除其他字体）
           cp -f "$EXTRACTED_FONT_DIR/RobotoFlex-Regular.ttf" "$TARGET_FONT_DIR/"
           cp -f "$EXTRACTED_FONT_DIR/Roboto-Regular.ttf" "$TARGET_FONT_DIR/"
           cp -f "$EXTRACTED_FONT_DIR/Roboto-Italic.ttf" "$TARGET_FONT_DIR/"
           
-          # 删除冗余字体（若需保留模块原有冗余文件，可注释这行）
-          rm -f "$TARGET_FONT_DIR/SysSans-En-Regular.ttf" "$TARGET_FONT_DIR/SysFont-Regular.ttf"
+          echo "✅ 特定Roboto字体替换完成，当前目标目录文件："
+          ls -l "$TARGET_FONT_DIR"
 
-      # 步骤4：构建模块压缩包（仅更新字体，保留其他文件）
-      - name: 构建模块压缩包（仅更新字体）
+      # 步骤4：构建模块压缩包（仅更新字体，保留原始模块所有其他文件）
+      - name: 构建MFGA更新包（保留原始文件结构）
         run: |
           MODULE_NAME="MakeFontsGreatAgain-Updated.zip"
           
-          # 1. 解压原始模块到临时目录（保留所有原始文件）
-          mkdir -p temp-original
-          7z x mfga-latest-module.zip -otemp-original
+          # 1. 解压原始MFGA模块到临时目录（完整保留所有原始文件）
+          mkdir -p temp-original-module
+          7z x mfga-latest-module.zip -otemp-original-module
           
-          # 2. 覆盖临时目录中的字体文件为新替换的
-          cp -rf system/fonts/* temp-original/system/fonts/
+          # 2. 用新替换的字体覆盖临时目录中的旧字体（仅更新字体，其他文件不动）
+          cp -rf "$TARGET_FONT_DIR"/* "temp-original-module/system/fonts/"
           
-          # 3. 重新打包临时目录（包含原始所有文件 + 新字体）
-          cd temp-original
-          zip -r "../$MODULE_NAME" ./*
+          # 3. 基于临时目录重新打包（确保原始文件+新字体完整）
+          cd temp-original-module
+          zip -r "../$MODULE_NAME" ./*  # 打包所有原始文件+更新后的字体
           cd ..
           
-          echo "✅ 模块压缩包构建完成：$MODULE_NAME"
-          # 验证新包中的字体是否为替换后的
-          unzip -l "$MODULE_NAME" | grep "Roboto"
+          echo "✅ MFGA更新包构建完成：$MODULE_NAME"
+          # 验证包内文件：确认Roboto字体已更新，其他文件（如META-INF）保留
+          echo "📁 验证更新包内容（关键文件）："
+          unzip -l "$MODULE_NAME" | grep -E "Roboto|system/fonts|META-INF|action.sh|update.json"
 
-      # 步骤5：发布到GitHub Release
-      - name: 发布到GitHub Release
+      # 步骤5：发布到当前触发的Release（无需手动指定标签，自动关联）
+      - name: 发布更新包到当前Release
         uses: softprops/action-gh-release@v1
         with:
           files: "MakeFontsGreatAgain-Updated.zip"
-          tag_name: ${{ github.ref_name }}
+          append_body: |
+            ### 📦 自动更新说明
+            - 仅更新 **Roboto系列字体**（RobotoFlex-Regular.ttf、Roboto-Regular.ttf、Roboto-Italic.ttf）
+            - 保留原始MFGA模块所有其他文件结构，无额外修改
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
