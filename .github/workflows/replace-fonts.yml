@@ -1,53 +1,79 @@
-#!/usr/bin/env bash
-set -e
+name: 自动替换字体（从最新Release模块提取，7z解压版）
+on:
+  workflow_dispatch: # 手动触发（保留，方便测试）
+  release:
+    types: [published] # Release发布时自动触发
 
-# ========== 配置路径 ==========
-# 解压后源字体目录（需与实际解压路径一致）
-EXTRACTED_FONT_DIR="extracted-latest-module/system/fonts"
-# 目标字体目录（模块最终要替换的路径）
-TARGET_FONT_DIR="system/fonts"
-# 冗余字体文件（要删除的文件）
-REDUNDANT_FONTS=("SysSans-En-Regular.ttf" "SysFont-Regular.ttf")
+jobs:
+  replace-fonts:
+    runs-on: ubuntu-latest
+    steps:
+      # 步骤1：检出仓库代码
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-# ========== 步骤1：确保目标目录存在 ==========
-echo "🔍 确保目标字体目录 $TARGET_FONT_DIR 存在..."
-mkdir -p "$TARGET_FONT_DIR"
-echo "✅ 目标目录已准备好"
+      # 步骤2：自动获取并下载最新Release的Magisk模块
+      - name: 自动获取并下载最新Release的Magisk模块
+        run: |
+          # 获取最新Release的模块下载链接
+          MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip") and contains("MakeFontsGreatAgain")) | .browser_download_url')
+          
+          # 检查是否获取到有效链接
+          if [ -z "$MODULE_URL" ]; then
+            echo "❌ 错误：未找到符合条件的最新Release模块"
+            exit 1
+          fi
+          echo "✅ 找到最新模块下载链接：$MODULE_URL"
+          
+          # 下载模块
+          wget -O mfga-latest-module.zip "$MODULE_URL" --no-verbose
+          
+          # 安装7z（增强解压兼容性）
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          
+          # 用7z解压模块
+          7z x mfga-latest-module.zip -oextracted-latest-module
+          
+          # 验证解压结果（检查字体目录）
+          FONT_DIR="extracted-latest-module/system/fonts"
+          if [ ! -d "$FONT_DIR" ]; then
+            echo "❌ 错误：解压后未找到字体目录 $FONT_DIR"
+            exit 1
+          fi
+          echo "✅ 字体目录存在，文件列表："
+          ls -l "$FONT_DIR"
 
-# ========== 步骤2：复制需要的字体文件（检查源文件存在性） ==========
-echo "🔄 开始复制字体文件..."
+      # 步骤3：提取新字体并替换（已删除NotoSansSC.ttf相关逻辑）
+      - name: 提取新字体并替换
+        run: |
+          EXTRACTED_FONT_DIR="extracted-latest-module/system/fonts"
+          TARGET_FONT_DIR="system/fonts"
+          
+          # 确保目标字体目录存在
+          mkdir -p "$TARGET_FONT_DIR"
+          
+          # 仅替换Roboto系列字体（删除NotoSansSC.ttf相关行）
+          cp -f "$EXTRACTED_FONT_DIR/RobotoFlex-Regular.ttf" "$TARGET_FONT_DIR/RobotoFlex-Regular.ttf"
+          cp -f "$EXTRACTED_FONT_DIR/Roboto-Regular.ttf" "$TARGET_FONT_DIR/Roboto-Regular.ttf"
+          cp -f "$EXTRACTED_FONT_DIR/Roboto-Italic.ttf" "$TARGET_FONT_DIR/Roboto-Italic.ttf"
+          
+          # 删除冗余字体文件
+          rm -f "$TARGET_FONT_DIR/SysSans-En-Regular.ttf" "$TARGET_FONT_DIR/SysFont-Regular.ttf"
 
-# 定义需要复制的字体列表（源文件名 → 目标文件名）
-declare -A FONT_MAPPING=(
-    ["NotoSansSC.ttf"]="NotoSansSC.ttf"
-    ["RobotoFlex-Regular.ttf"]="RobotoFlex-Regular.ttf"
-    ["Roboto-Regular.ttf"]="Roboto-Regular.ttf"
-    ["Roboto-Italic.ttf"]="Roboto-Italic.ttf"
-)
+      # 步骤4：构建模块压缩包（根据实际模块结构调整）
+      - name: 构建模块压缩包
+        run: |
+          MODULE_NAME="MakeFontsGreatAgain-Updated.zip"
+          zip -r "$MODULE_NAME" system META-INF action.sh update.json # 根据实际模块包含的文件调整
+          echo "✅ 模块压缩包构建完成：$MODULE_NAME"
 
-for src_font in "${!FONT_MAPPING[@]}"; do
-    dest_font="${FONT_MAPPING[$src_font]}"
-    src_path="$EXTRACTED_FONT_DIR/$src_font"
-    dest_path="$TARGET_FONT_DIR/$dest_font"
-
-    if [ -f "$src_path" ]; then
-        cp -f "$src_path" "$dest_path"
-        echo "✅ 已复制：$src_path → $dest_path"
-    else
-        echo "⚠️ 警告：源文件 $src_path 不存在，跳过复制"
-    fi
-done
-
-# ========== 步骤3：删除冗余字体文件（检查文件存在性） ==========
-echo "🗑️  开始清理冗余字体文件..."
-for font in "${REDUNDANT_FONTS[@]}"; do
-    font_path="$TARGET_FONT_DIR/$font"
-    if [ -f "$font_path" ]; then
-        rm -f "$font_path"
-        echo "✅ 已删除冗余文件：$font_path"
-    else
-        echo "ℹ️ 提示：冗余文件 $font_path 不存在，无需删除"
-    fi
-done
-
-echo "🎉 字体替换与清理完成！"
+      # 步骤5：发布到GitHub Release
+      - name: 发布到GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: "MakeFontsGreatAgain-Updated.zip"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
