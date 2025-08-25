@@ -1,11 +1,12 @@
-name: 自动替换字体（从最新Release模块提取，7z解压版）
+name: 自动替换字体并发布Release（标签触发版）
 on:
-  workflow_dispatch: # 手动触发（保留，方便测试）
-  release:
-    types: [published] # Release发布时自动触发
+  push:
+    tags:
+      - 'v*'  # 仅当推送 v 开头的标签时触发（如 v1.0.0、v2.3.4）
+  workflow_dispatch: # 保留手动触发，方便测试
 
 jobs:
-  replace-fonts:
+  replace-and-release:
     runs-on: ubuntu-latest
     steps:
       # 步骤1：检出仓库代码
@@ -17,15 +18,15 @@ jobs:
       # 步骤2：自动获取并下载最新Release的Magisk模块
       - name: 自动获取并下载最新Release的Magisk模块
         run: |
-          # 获取最新Release的模块下载链接（简化筛选条件，仅筛选.zip文件）
+          # 获取最新Release的模块下载链接（筛选.zip文件）
           MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
           
-          # 增加错误处理，检查是否获取到有效链接
+          # 检查链接有效性
           if [ -z "$MODULE_URL" ]; then
-            echo "❌ 错误：未找到符合条件的最新Release模块（.zip格式文件）"
+            echo "❌ 错误：未找到符合条件的最新Release模块（.zip格式）"
             exit 1
           fi
-          echo "✅ 找到最新模块下载链接：$MODULE_URL"
+          echo "✅ 找到模块链接：$MODULE_URL"
           
           # 下载模块
           wget -O mfga-latest-module.zip "$MODULE_URL" --no-verbose
@@ -37,7 +38,7 @@ jobs:
           # 用7z解压模块
           7z x mfga-latest-module.zip -oextracted-latest-module
           
-          # 验证解压结果（检查字体目录）
+          # 验证字体目录存在
           FONT_DIR="extracted-latest-module/system/fonts"
           if [ ! -d "$FONT_DIR" ]; then
             echo "❌ 错误：解压后未找到字体目录 $FONT_DIR"
@@ -46,34 +47,35 @@ jobs:
           echo "✅ 字体目录存在，文件列表："
           ls -l "$FONT_DIR"
 
-      # 步骤3：提取新字体并替换（已删除NotoSansSC.ttf相关逻辑）
+      # 步骤3：提取新字体并替换（仅保留Roboto系列）
       - name: 提取新字体并替换
         run: |
           EXTRACTED_FONT_DIR="extracted-latest-module/system/fonts"
           TARGET_FONT_DIR="system/fonts"
           
-          # 确保目标字体目录存在
+          # 确保目标目录存在
           mkdir -p "$TARGET_FONT_DIR"
           
-          # 仅替换Roboto系列字体（删除NotoSansSC.ttf相关行）
+          # 替换Roboto系列字体
           cp -f "$EXTRACTED_FONT_DIR/RobotoFlex-Regular.ttf" "$TARGET_FONT_DIR/RobotoFlex-Regular.ttf"
           cp -f "$EXTRACTED_FONT_DIR/Roboto-Regular.ttf" "$TARGET_FONT_DIR/Roboto-Regular.ttf"
           cp -f "$EXTRACTED_FONT_DIR/Roboto-Italic.ttf" "$TARGET_FONT_DIR/Roboto-Italic.ttf"
           
-          # 删除冗余字体文件
+          # 删除冗余字体
           rm -f "$TARGET_FONT_DIR/SysSans-En-Regular.ttf" "$TARGET_FONT_DIR/SysFont-Regular.ttf"
 
-      # 步骤4：构建模块压缩包（根据实际模块结构调整）
+      # 步骤4：构建模块压缩包
       - name: 构建模块压缩包
         run: |
           MODULE_NAME="MakeFontsGreatAgain-Updated.zip"
-          zip -r "$MODULE_NAME" system META-INF action.sh update.json # 根据实际模块包含的文件调整
+          zip -r "$MODULE_NAME" system META-INF action.sh update.json  # 根据实际文件调整
           echo "✅ 模块压缩包构建完成：$MODULE_NAME"
 
-      # 步骤5：发布到GitHub Release
+      # 步骤5：发布到GitHub Release（与触发的标签关联）
       - name: 发布到GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: "MakeFontsGreatAgain-Updated.zip"
+          tag_name: ${{ github.ref_name }}  # 自动获取触发时的标签（如 v1.0.0）
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
