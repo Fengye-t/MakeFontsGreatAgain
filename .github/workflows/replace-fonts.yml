@@ -56,28 +56,36 @@ jobs:
           echo " 定位到字体目录：$FONT_DIR"
           echo "FONT_DIR=$FONT_DIR" >> $GITHUB_ENV
 
-      # 步骤3：替换目标字体文件
-      - name: 替换Roboto字体
+      # 步骤3：替换并删除目标字体文件
+      - name: 处理字体文件（替换+删除）
         run: |
-          # 创建目标字体目录
-          mkdir -p custom-fonts
-          
           # 要替换的字体列表
-          FONTS=("RobotoFlex-Regular.ttf" "Roboto-Regular.ttf" "Roboto-Italic.ttf")
+          FONTS_TO_REPLACE=("RobotoFlex-Regular.ttf" "Roboto-Regular.ttf" "Roboto-Italic.ttf")
+          # 要删除的字体列表
+          FONTS_TO_DELETE=("SysSans-En-Regular.ttf" "SysFont-Regular.ttf")
           
-          # 复制字体文件
-          for font in "${FONTS[@]}"; do
-            if [ ! -f "${{ env.FONT_DIR }}/$font" ]; then
-              echo "️ 警告：原始字体 $font 不存在，跳过替换"
-              continue
+          # 复制要替换的字体到临时目录（假设仓库根目录有 custom-fonts 目录存放新字体）
+          mkdir -p custom-fonts
+          for font in "${FONTS_TO_REPLACE[@]}"; do
+            if [ -f "custom-fonts/$font" ]; then
+              cp "custom-fonts/$font" "${{ env.FONT_DIR }}/"
+              echo " 已替换字体：$font"
+            else
+              echo "️ 警告：自定义字体 custom-fonts/$font 不存在，跳过替换"
             fi
-            cp "${{ env.FONT_DIR }}/$font" custom-fonts/
           done
           
-          echo " 自定义字体准备完成："
-          ls -l custom-fonts/
+          # 删除指定字体
+          for font in "${FONTS_TO_DELETE[@]}"; do
+            if [ -f "${{ env.FONT_DIR }}/$font" ]; then
+              rm "${{ env.FONT_DIR }}/$font"
+              echo " 已删除字体：$font"
+            else
+              echo "️ 提示：字体 ${{ env.FONT_DIR }}/$font 不存在，无需删除"
+            fi
+          done
 
-      # 步骤4：构建更新包（修复路径问题）
+      # 步骤4：构建更新包
       - name: 构建MFGA更新包
         run: |
           # 1. 创建干净的构建目录
@@ -87,24 +95,12 @@ jobs:
           # 2. 复制原始模块（保留目录结构）
           cp -R extracted-module/* $BUILD_DIR/
           
-          # 3. 确保目标字体目录存在
-          TARGET_FONT_DIR="$BUILD_DIR/system/fonts"
-          mkdir -p "$TARGET_FONT_DIR"
-          
-          # 4. 覆盖目标字体
-          if [ $(ls -1 custom-fonts/ | wc -l) -gt 0 ]; then
-            cp custom-fonts/*.ttf "$TARGET_FONT_DIR/"
-            echo " 成功替换字体"
-          else
-            echo "️ 警告：无自定义字体可替换"
-          fi
-          
-          # 5. 打包模块
+          # 3. 打包模块
           cd $BUILD_DIR
           zip -r ../MakeFontsGreatAgain-Updated.zip *
           cd ..
           
-          # 6. 验证压缩包
+          # 4. 验证压缩包
           ZIP_SIZE=$(stat -c%s "MakeFontsGreatAgain-Updated.zip")
           if [ $ZIP_SIZE -lt 102400 ]; then
             echo " 错误：生成包大小异常 (${ZIP_SIZE}字节)"
@@ -112,7 +108,7 @@ jobs:
           fi
           echo " 更新包生成成功 (大小: ${ZIP_SIZE}字节)"
           
-          # 7. 列出关键文件验证
+          # 5. 列出关键文件验证
           unzip -l MakeFontsGreatAgain-Updated.zip | \
             grep -E 'META-INF|fonts/Roboto|module.prop|system/fonts'
 
@@ -125,7 +121,8 @@ jobs:
           body: |
             ###  自动构建的MFGA更新包
             **包含以下修改：**
-            - 已更新最新Roboto系列字体
+            - 已更新RobotoFlex-Regular.ttf、Roboto-Regular.ttf、Roboto-Italic.ttf字体
+            - 已删除SysSans-En-Regular.ttf、SysFont-Regular.ttf字体
             - 保留原始模块所有功能
             - 构建时间: ${{ github.run_attempt }} @ ${{ github.run_id }}
           overwrite: true
