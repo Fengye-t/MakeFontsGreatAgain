@@ -2,25 +2,26 @@ name: 自动替换字体并发布Release（含数字Tag触发版）
 on:
   push:
     tags:
-      - '*'  # 匹配所有Tag（包括纯数字Tag如1593082400、带字母Tag如v1.0）
-  workflow_dispatch: # 保留手动触发，方便测试
+      - '*'  # 匹配所有Tag（包括纯数字、带字母等格式）
+  workflow_dispatch: # 手动触发测试
 
 jobs:
   replace-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 确保有发布Release的权限
+      contents: write  # 发布Release需要的权限
     steps:
       # 步骤1：检出仓库代码
       - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: true  # 保留凭证，避免后续权限不足
 
-      # 步骤2：获取并解压最新MFGA模块（修复路径嵌套+文件校验）
+      # 步骤2：获取并解压最新MFGA模块（修复7z参数+路径定位）
       - name: 自动获取并下载最新MFGA模块
         run: |
+          # 1. 获取模块链接
           MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip") and contains("MFGA")) | .browser_download_url')
           if [ -z "$MODULE_URL" ] || [ "$MODULE_URL" = "null" ]; then
             echo "❌ 错误：未找到含MFGA关键词的.zip模块"
@@ -28,19 +29,19 @@ jobs:
           fi
           echo "✅ 找到MFGA模块链接：$MODULE_URL"
 
-          # 下载+完整性校验
+          # 2. 下载+完整性校验
           wget -O mfga-latest-module.zip "$MODULE_URL" --no-verbose --tries=3 --timeout=30
           if [ ! -f "mfga-latest-module.zip" ] || [ $(stat -c%s "mfga-latest-module.zip") -lt 1024 ]; then
             echo "❌ 错误：模块下载不完整或损坏"
             exit 1
           fi
 
-          # 解压（排除符号链接，避免权限问题）
+          # 3. 安装工具+解压（修复7z参数，用-xr!排除符号链接）
           sudo apt-get update && sudo apt-get install -y p7zip-full tree
           mkdir -p extracted-latest-module
-          7z x mfga-latest-module.zip -oextracted-latest-module -exl
+          7z x mfga-latest-module.zip -oextracted-latest-module -xr!*.lnk -xr!*.symlink  # 修复后的7z命令
 
-          # 自动定位字体目录
+          # 4. 自动定位字体目录
           FONT_DIR=$(find extracted-latest-module -type d -name "fonts" | grep "system/fonts" | head -n1)
           if [ -z "$FONT_DIR" ]; then
             echo "❌ 错误：未找到 system/fonts 目录，解压结构："
@@ -48,7 +49,7 @@ jobs:
             exit 1
           fi
           echo "✅ 找到字体目录：$FONT_DIR"
-          echo "FONT_DIR=$FONT_DIR" >> $GITHUB_ENV
+          echo "FONT_DIR=$FONT_DIR" >> $GITHUB_ENV  # 存入环境变量，后续步骤复用
 
       # 步骤3：替换特定Roboto字体文件（校验字体存在性）
       - name: 替换特定Roboto字体文件
@@ -56,6 +57,7 @@ jobs:
           TARGET_FONT_DIR="system/fonts"
           mkdir -p "$TARGET_FONT_DIR"
 
+          # 校验原始模块中目标字体是否存在
           REQUIRED_FONTS=("RobotoFlex-Regular.ttf" "Roboto-Regular.ttf" "Roboto-Italic.ttf")
           for FONT in "${REQUIRED_FONTS[@]}"; do
             if [ ! -f "${{ env.FONT_DIR }}/$FONT" ]; then
@@ -64,6 +66,7 @@ jobs:
             fi
           done
 
+          # 复制目标字体
           cp -f "${{ env.FONT_DIR }}/"*.ttf "$TARGET_FONT_DIR/"
           echo "✅ 字体替换完成，目标目录文件："
           ls -l "$TARGET_FONT_DIR"
@@ -72,6 +75,7 @@ jobs:
       - name: 构建MFGA更新包
         run: |
           MODULE_NAME="MakeFontsGreatAgain-Updated.zip"
+          # 自动定位模块根目录
           MODULE_ROOT=$(dirname "${{ env.FONT_DIR }}/..")
           if [ ! -d "$MODULE_ROOT/system" ] || [ ! -d "$MODULE_ROOT/META-INF" ]; then
             echo "❌ 错误：未找到模块根目录，结构："
@@ -99,7 +103,7 @@ jobs:
             exit 1
           fi
           sudo chmod 644 "$MODULE_NAME"
-          echo "✅ 更新包构建完成：$MODULE_NAME"
+          echo "✅ MFGA更新包构建完成：$MODULE_NAME"
           unzip -l "$MODULE_NAME" | grep -E "Roboto|system/fonts|META-INF"
 
       # 步骤5：发布到关联Tag的Release（增加重试）
@@ -107,12 +111,12 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: "MakeFontsGreatAgain-Updated.zip"
-          tag_name: ${{ github.ref_name }}  # 关联触发的Tag（如1593082400）
+          tag_name: ${{ github.ref_name }}  # 关联触发的Tag
           append_body: |
             ### 📦 自动更新说明
             - 仅更新 **Roboto系列字体**（RobotoFlex-Regular.ttf、Roboto-Regular.ttf、Roboto-Italic.ttf）
             - 保留原始MFGA模块所有文件结构，无额外修改
-          retry-count: 3
-          retry-delay: 10
+          retry-count: 3  # 发布失败时重试3次
+          retry-delay: 10  # 重试间隔10秒
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
