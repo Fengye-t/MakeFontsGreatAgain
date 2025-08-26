@@ -89,7 +89,7 @@ jobs:
           echo "🔍 正在查询 ${STATUS} 且时间在 $(date -d "@${{ env.SINCE }}" +"%Y-%m-%d") 之前的工作流记录..."
           RUN_IDS=$(gh api repos/$OWNER/$REPO/actions/workflows/$WORKFLOW_ID/runs \
             --paginate \
-            --jq "[.workflow_runs[] | select(.conclusion == \"${{ env.STATUS }}\" and .created_at | sub(\"\\+.*\"; \"\") | strptime(\"%Y-%m-%dT%H:%M:%S\") | mktime < ${{ env.SINCE }}) | .id] | join(\" \")")
+            --jq "[.workflow_runs[] | select(.conclusion == \"${{ env.STATUS }}\" and .created_at | sub(\"+.*\"; \"\") | strptime(\"%Y-%m-%dT%H:%M:%S\") | mktime < ${{ env.SINCE }}) | .id] | join(\" \")")
 
           if [ -z "$RUN_IDS" ] || [ "$RUN_IDS" = "[]" ]; then
             echo "ℹ️ 未找到符合条件的工作流记录，无需清理"
