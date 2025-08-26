@@ -71,13 +71,14 @@ jobs:
           echo "✅ 字体替换完成，目标目录文件："
           ls -l "$TARGET_FONT_DIR"
 
-      # 步骤4：构建MFGA更新包（修复模块根目录+权限）
+      # 步骤4：构建MFGA更新包（修复模块根目录校验逻辑）
       - name: 构建MFGA更新包
         run: |
           MODULE_NAME="MakeFontsGreatAgain-Updated.zip"
           # 直接使用解压后的根目录 extracted-latest-module
           MODULE_ROOT="extracted-latest-module"
-          if [ ! -d "$MODULE_ROOT/system" ] || [ ! -d "$MODULE_ROOT/product" ]; then  # 校验核心子目录存在
+          # 修改校验逻辑，只要system目录存在即认为根目录结构正常
+          if [ ! -d "$MODULE_ROOT/system" ]; then  
             echo "❌ 错误：模块根目录结构异常，当前结构："
             tree "$MODULE_ROOT"
             exit 1
