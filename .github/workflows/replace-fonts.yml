@@ -71,23 +71,21 @@ jobs:
           echo "✅ 字体替换完成，目标目录文件："
           ls -l "$TARGET_FONT_DIR"
 
-      # 步骤4：构建MFGA更新包（修复cp命令递归复制）
+      # 步骤4：构建MFGA更新包（修复模块根目录校验+cp递归复制）
       - name: 构建MFGA更新包
         run: |
-          MODULE_NAME="MakeFontsGreatAgain-Updated.zip"
-          # 直接使用解压后的根目录 extracted-latest-module
           MODULE_ROOT="extracted-latest-module"
-          # 修改校验逻辑，只要system目录存在即认为根目录结构正常
-          if [ ! -d "$MODULE_ROOT/system" ]; then  
-            echo "❌ 错误：模块根目录结构异常，当前结构："
-            tree "$MODULE_ROOT"
+          # 校验MODULE_ROOT非空且system目录存在
+          if [ -z "$MODULE_ROOT" ] || [ ! -d "$MODULE_ROOT/system" ]; then  
+            echo "❌ 错误：模块根目录结构异常或MODULE_ROOT未设置，当前结构："
+            ls -al "$MODULE_ROOT"
             exit 1
           fi
           echo "✅ 找到模块根目录：$MODULE_ROOT"
 
           # 临时目录+权限处理
           mkdir -p temp-build
-          # 添加 -R 选项支持递归复制目录
+          # 使用cp -R递归复制目录
           sudo cp -R --no-preserve=mode "$MODULE_ROOT"/* temp-build/
           sudo chmod -R 755 temp-build/
 
@@ -96,17 +94,17 @@ jobs:
 
           # 打包（排除无效文件）
           cd temp-build
-          zip -r "../$MODULE_NAME" ./* -x ".*" -x "__MACOSX/*"
+          zip -r "../MakeFontsGreatAgain-Updated.zip" ./* -x ".*" -x "__MACOSX/*"
           cd ..
 
           # 校验包有效性
-          if [ ! -f "$MODULE_NAME" ] || [ $(stat -c%s "$MODULE_NAME") -lt 1024 ]; then
+          if [ ! -f "MakeFontsGreatAgain-Updated.zip" ] || [ $(stat -c%s "MakeFontsGreatAgain-Updated.zip") -lt 1024 ]; then
             echo "❌ 错误：更新包构建失败"
             exit 1
           fi
-          sudo chmod 644 "$MODULE_NAME"
-          echo "✅ MFGA更新包构建完成：$MODULE_NAME"
-          unzip -l "$MODULE_NAME" | grep -E "Roboto|system/fonts|META-INF"
+          sudo chmod 644 "MakeFontsGreatAgain-Updated.zip"
+          echo "✅ MFGA更新包构建完成：MakeFontsGreatAgain-Updated.zip"
+          unzip -l "MakeFontsGreatAgain-Updated.zip" | grep -E "Roboto|system/fonts|META-INF"
 
       # 步骤5：发布到关联Tag的Release（支持覆盖已有Release）
       - name: 发布更新包到GitHub Release
