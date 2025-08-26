@@ -71,7 +71,7 @@ jobs:
           echo "✅ 字体替换完成，目标目录文件："
           ls -l "$TARGET_FONT_DIR"
 
-      # 步骤4：构建MFGA更新包（修复模块根目录校验逻辑）
+      # 步骤4：构建MFGA更新包（修复cp命令递归复制）
       - name: 构建MFGA更新包
         run: |
           MODULE_NAME="MakeFontsGreatAgain-Updated.zip"
@@ -87,6 +87,7 @@ jobs:
 
           # 临时目录+权限处理
           mkdir -p temp-build
+          # 添加 -r 选项支持递归复制目录
           sudo cp -rf --no-preserve=mode "$MODULE_ROOT"/* temp-build/
           sudo chmod -R 755 temp-build/
 
