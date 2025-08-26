@@ -1,144 +1,66 @@
-name: 手动清理 replace-fonts.yml 工作流历史记录
+name: Clean Replace Fonts Workflow Runs
 on:
+  # 手动触发（在 GitHub Actions 页面点击运行）
   workflow_dispatch:
     inputs:
-      workflow_status:
-        type: choice
-        description: "选择要清理的工作流状态："
-        required: true
-        options:
-          - 失败 (failed)
-          - 取消 (cancelled)
-          - 成功 (success)
-      days_old:
-        type: number
-        description: "清理多少天前的记录？（0 = 清理所有该状态记录，需为非负整数）"
-        required: true
-        default: 7
-      dry_run:
-        type: boolean
-        description: "是否开启模拟清理？（仅展示待清理记录，不实际删除）"
-        required: true
-        default: false
+      # 可输入要保留的最新运行数量，默认为 5
+      keep_latest_runs:
+        description: 'Number of latest runs to keep'
+        required: false
+        default: '5'
+  # 也可配置定时触发，比如每天凌晨 2 点运行
+  # schedule:
+  #   - cron: '0 2 * * *'
 
 jobs:
   clean-workflow-runs:
     runs-on: ubuntu-latest
     steps:
-      - name: 安装 GitHub CLI
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup GitHub CLI
         run: |
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt-get update && sudo apt-get install -y gh
+          # 安装 GitHub CLI
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+            && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+            && sudo apt update \
+            && sudo apt install gh -y
+          # 验证安装
+          gh --version
 
-      - name: 配置 GitHub CLI 认证
-        run: gh auth login --with-token <<< ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 映射工作流状态
-        id: map_status
+      - name: Authenticate GitHub CLI
         run: |
-          case "${{ github.event.inputs.workflow_status }}" in
-            "失败 (failed)") echo "STATUS=failed" >> $GITHUB_ENV ;;
-            "取消 (cancelled)") echo "STATUS=cancelled" >> $GITHUB_ENV ;;
-            "成功 (success)") echo "STATUS=success" >> $GITHUB_ENV ;;
-          esac
+          # 使用 GitHub Actions 提供的令牌进行认证
+          gh auth login --with-token <<< ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 校验并转换 days_old 为整数
-        id: validate_days
+      - name: List and Clean Workflow Runs
         run: |
-          DAYS_OLD=${{ github.event.inputs.days_old }}
-          INT_DAYS=$(printf "%.0f" "$DAYS_OLD")
-          
-          if ! [[ "$INT_DAYS" =~ ^[0-9]+$ ]] || [ "$INT_DAYS" -lt 0 ]; then
-            echo "❌ 错误：days_old 必须为非负整数，当前值：$DAYS_OLD"
-            exit 1
-          fi
-          
-          echo "INT_DAYS=$INT_DAYS" >> $GITHUB_ENV
-          echo "✅ days_old 已转换为整数：$INT_DAYS"
-
-      - name: 计算清理时间范围
-        id: calc_time
-        run: |
-          INT_DAYS=${{ env.INT_DAYS }}
-          if [ "$INT_DAYS" -eq 0 ]; then
-            echo "SINCE=0" >> $GITHUB_ENV
-            echo "📅 清理所有 ${STATUS} 状态的工作流记录"
-          else
-            SINCE=$(date -d "$INT_DAYS days ago" +%s)
-            echo "SINCE=$SINCE" >> $GITHUB_ENV
-            echo "📅 清理时间范围：$(date -d "@$SINCE" +"%Y-%m-%d %H:%M:%S") 之前的 ${STATUS} 记录"
-          fi
-
-      - name: 获取待清理的工作流记录 ID（修复 jq 正则转义）
-        id: get_run_ids
-        run: |
-          OWNER=${{ github.repository_owner }}
-          REPO=${{ github.event.repository.name }}
-          WORKFLOW_FILE="replace-fonts.yml"
-
-          # 1. 获取 replace-fonts.yml 的工作流 ID
-          WORKFLOW_ID=$(gh api repos/$OWNER/$REPO/actions/workflows --jq ".workflows[] | select(.path == \".github/workflows/$WORKFLOW_FILE\") | .id")
+          # 获取要保留的最新运行数量
+          KEEP_LATEST=${{ github.event.inputs.keep_latest_runs || '5' }}
+          # 获取 workflow_id，通过工作流文件名查找
+          WORKFLOW_ID=$(gh api repos/${{ github.repository }}/actions/workflows --jq '.workflows[] | select(.path == ".github/workflows/replace-fonts.yml") | .id')
           if [ -z "$WORKFLOW_ID" ]; then
-            echo "❌ 错误：未找到工作流文件 .github/workflows/$WORKFLOW_FILE"
+            echo "❌ 未找到 .github/workflows/replace-fonts.yml 对应的工作流ID"
             exit 1
           fi
-          echo "✅ 找到 replace-fonts.yml 工作流 ID：$WORKFLOW_ID"
-
-          # 2. 获取符合条件的记录 ID（修复 jq 正则转义，直接用 "+" 匹配）
-          echo "🔍 正在查询 ${STATUS} 且时间在 $(date -d "@${{ env.SINCE }}" +"%Y-%m-%d") 之前的工作流记录..."
-          RUN_IDS=$(gh api repos/$OWNER/$REPO/actions/workflows/$WORKFLOW_ID/runs \
-            --paginate \
-            --jq "[.workflow_runs[] | select(.conclusion == \"${{ env.STATUS }}\" and .created_at | sub(\"+.*\"; \"\") | strptime(\"%Y-%m-%dT%H:%M:%S\") | mktime < ${{ env.SINCE }}) | .id] | join(\" \")")
-
-          if [ -z "$RUN_IDS" ] || [ "$RUN_IDS" = "[]" ]; then
-            echo "ℹ️ 未找到符合条件的工作流记录，无需清理"
-            echo "RUN_IDS=" >> $GITHUB_ENV
-          else
-            echo "✅ 找到 $(echo $RUN_IDS | wc -w) 条待清理记录，ID：$RUN_IDS"
-            echo "RUN_IDS=$RUN_IDS" >> $GITHUB_ENV
+          echo "找到工作流ID: $WORKFLOW_ID"
+          # 获取该工作流的所有运行记录（按创建时间降序排列）
+          RUNS=$(gh api repos/${{ github.repository }}/actions/workflows/$WORKFLOW_ID/runs --method GET --paginate --jq '.workflow_runs | sort_by(.created_at) | reverse')
+          # 计算需要删除的运行数量（总运行数 - 要保留的最新数量）
+          TOTAL_RUNS=$(echo "$RUNS" | jq 'length')
+          RUNS_TO_DELETE=$((TOTAL_RUNS - KEEP_LATEST))
+          if [ "$RUNS_TO_DELETE" -le 0 ]; then
+            echo "✅ 运行数量 $TOTAL_RUNS 小于等于要保留的数量 $KEEP_LATEST，无需清理"
+            exit 0
           fi
-
-      - name: 执行清理（或模拟清理）
-        if: env.RUN_IDS != ''
-        run: |
-          OWNER=${{ github.repository_owner }}
-          REPO=${{ github.event.repository.name }}
-          DRY_RUN=${{ github.event.inputs.dry_run }}
-          RUN_IDS=(${{ env.RUN_IDS }})
-
-          echo "========================================"
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "📝 开启模拟清理模式，仅展示操作，不实际删除"
-          else
-            echo "⚠️ 开启实际清理模式，将删除以下工作流记录"
-          fi
-          echo "========================================"
-
-          # 循环处理每条待清理记录
-          for ID in "${RUN_IDS[@]}"; do
-            # 获取记录的创建时间和运行编号
-            RUN_INFO=$(gh api repos/$OWNER/$REPO/actions/runs/$ID --jq "{created_at: .created_at, run_number: .run_number}")
-            CREATED_AT=$(echo $RUN_INFO | jq -r .created_at | sed 's/T/ /; s/Z//')
-            RUN_NUMBER=$(echo $RUN_INFO | jq -r .run_number)
-
-            if [ "$DRY_RUN" = "true" ]; then
-              echo "✅ 模拟清理：记录编号 $RUN_NUMBER（ID：$ID），创建时间：$CREATED_AT"
-            else
-              echo "🗑️ 正在清理：记录编号 $RUN_NUMBER（ID：$ID），创建时间：$CREATED_AT"
-              # 实际删除工作流记录
-              gh api repos/$OWNER/$REPO/actions/runs/$ID -X DELETE --confirm
-              if [ $? -eq 0 ]; then
-                echo "✅ 清理成功：记录 ID $ID"
-              else
-                echo "❌ 清理失败：记录 ID $ID"
-              fi
-            fi
+          echo "将删除 $RUNS_TO_DELETE 条旧运行记录，保留最新的 $KEEP_LATEST 条"
+          # 遍历要删除的运行记录并执行删除
+          echo "$RUNS" | jq -r ".[$KEEP_LATEST:] | .[].id" | while read -r RUN_ID; do
+            echo "正在删除运行ID: $RUN_ID"
+            gh api repos/${{ github.repository }}/actions/runs/$RUN_ID -X DELETE
+            echo "已删除运行ID: $RUN_ID"
           done
-
-          echo "========================================"
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "📝 模拟清理完成，共处理 $(echo $RUN_IDS | wc -w) 条记录（未实际删除）"
-          else
-            echo "✅ 实际清理完成，共处理 $(echo $RUN_IDS | wc -w) 条记录"
-          fi
+          echo "✅ 清理完成"
