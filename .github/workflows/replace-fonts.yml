@@ -1,15 +1,16 @@
-name: 自动替换字体并发布Release（含数字Tag触发版）
+name: 自动替换字体并发布Release（修正版）
 on:
   push:
     tags:
-      - '*'  # 匹配所有Tag
-  workflow_dispatch:
+      - '*'  # 匹配所有标签
+  workflow_dispatch:  # 支持手动触发
 
 jobs:
   replace-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # 发布Release需要的权限
+    
     steps:
       # 步骤1：检出仓库代码
       - name: 检出仓库代码
@@ -19,94 +20,112 @@ jobs:
           persist-credentials: true
 
       # 步骤2：获取并解压最新MFGA模块
-      - name: 自动获取并下载最新MFGA模块
+      - name: 下载并解压官方MFGA模块
         run: |
-          # 1. 获取模块链接（仅从官方GitHub仓库获取）
-          MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" \
-            | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
+          # 1. 获取最新模块下载链接
+          MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | \
+                       jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
           
           if [ -z "$MODULE_URL" ] || [ "$MODULE_URL" = "null" ]; then
-            echo " 错误：未找到官方MFGA模块资源"
+            echo " 错误：无法获取官方模块下载链接"
             exit 1
           fi
-          echo " 获取官方MFGA模块：$MODULE_URL"
-
-          # 2. 下载正版资源
-          wget -O mfga-official-module.zip "$MODULE_URL"
-          if [ $(stat -c%s "mfga-official-module.zip") -lt 1024 ]; then
-            echo " 错误：官方资源下载失败"
+          echo " 获取到模块下载链接：$MODULE_URL"
+          
+          # 2. 下载模块
+          wget -O mfga-module.zip "$MODULE_URL"
+          if [ ! -f "mfga-module.zip" ] || [ $(stat -c%s "mfga-module.zip") -lt 1024 ]; then
+            echo " 错误：模块下载失败或文件太小"
             exit 1
           fi
-
-          # 3. 解压官方资源
-          sudo apt-get update && sudo apt-get install -y p7zip-full
-          mkdir -p extracted-module
-          7z x mfga-official-module.zip -oextracted-module -y
-
+          
+          # 3. 解压模块
+          sudo apt-get update && sudo apt-get install -y unzip
+          unzip mfga-module.zip -d extracted-module
+          
           # 4. 定位字体目录
-          FONT_DIR=$(find extracted-module -type d -name "fonts" | grep "system/fonts" | head -n1)
+          FONT_DIR=$(find extracted-module -type d -name "fonts" -path "*/system/fonts" | head -n1)
           if [ -z "$FONT_DIR" ]; then
-            echo " 错误：官方资源结构异常"
+            echo " 错误：未找到字体目录，解压结构："
             find extracted-module -type d | sort
             exit 1
           fi
+          echo " 定位到字体目录：$FONT_DIR"
           echo "FONT_DIR=$FONT_DIR" >> $GITHUB_ENV
 
-      # 步骤3：替换字体文件（Roboto版权归Google所有）
+      # 步骤3：替换目标字体文件
       - name: 替换Roboto字体
         run: |
-          # 重要提示：Roboto字体为Google官方版权，仅用于合法替换
-          mkdir -p system/fonts
+          # 创建目标字体目录
+          mkdir -p custom-fonts
           
-          FONTS=(
-            "RobotoFlex-Regular.ttf"
-            "Roboto-Regular.ttf"
-            "Roboto-Italic.ttf"
-          )
+          # 要替换的字体列表
+          FONTS=("RobotoFlex-Regular.ttf" "Roboto-Regular.ttf" "Roboto-Italic.ttf")
           
+          # 复制字体文件
           for font in "${FONTS[@]}"; do
-            src="${{ env.FONT_DIR }}/$font"
-            dest="system/fonts/$font"
-            
-            if [ ! -f "$src" ]; then
-              echo "️ 警告：官方资源未包含 $font"
-            else
-              cp "$src" "$dest"
-              echo " 合法替换 $font"
+            if [ ! -f "${{ env.FONT_DIR }}/$font" ]; then
+              echo "️ 警告：原始字体 $font 不存在，跳过替换"
+              continue
             fi
+            cp "${{ env.FONT_DIR }}/$font" custom-fonts/
           done
+          
+          echo " 自定义字体准备完成："
+          ls -l custom-fonts/
 
-      # 步骤4：构建更新包（修正核心错误）
+      # 步骤4：构建更新包（修复路径问题）
       - name: 构建MFGA更新包
         run: |
-          # 重建官方模块结构
-          mkdir -p build-output/system/fonts
+          # 1. 创建干净的构建目录
+          BUILD_DIR="build-output"
+          mkdir -p $BUILD_DIR
           
-          # 复制原始文件（不含字体）
-          cp -r extracted-module/* build-output/
+          # 2. 复制原始模块（保留目录结构）
+          cp -R extracted-module/* $BUILD_DIR/
           
-          # 覆盖字体文件
-          cp system/fonts/* build-output/${{ env.FONT_DIR }}/
+          # 3. 确保目标字体目录存在
+          TARGET_FONT_DIR="$BUILD_DIR/system/fonts"
+          mkdir -p "$TARGET_FONT_DIR"
           
-          # 创建合法发布包
-          cd build-output
-          zip -r9 ../MakeFontsGreatAgain-Updated.zip *
+          # 4. 覆盖目标字体
+          if [ $(ls -1 custom-fonts/ | wc -l) -gt 0 ]; then
+            cp custom-fonts/*.ttf "$TARGET_FONT_DIR/"
+            echo " 成功替换字体"
+          else
+            echo "️ 警告：无自定义字体可替换"
+          fi
+          
+          # 5. 打包模块
+          cd $BUILD_DIR
+          zip -r ../MakeFontsGreatAgain-Updated.zip *
           cd ..
           
-          # 版权信息验证
-          echo "️ 最终包文件版权信息："
-          unzip -Z -1 MakeFontsGreatAgain-Updated.zip | grep -e 'META-INF' -e 'fonts'
+          # 6. 验证压缩包
+          ZIP_SIZE=$(stat -c%s "MakeFontsGreatAgain-Updated.zip")
+          if [ $ZIP_SIZE -lt 102400 ]; then
+            echo " 错误：生成包大小异常 (${ZIP_SIZE}字节)"
+            exit 1
+          fi
+          echo " 更新包生成成功 (大小: ${ZIP_SIZE}字节)"
+          
+          # 7. 列出关键文件验证
+          unzip -l MakeFontsGreatAgain-Updated.zip | \
+            grep -E 'META-INF|fonts/Roboto|module.prop|system/fonts'
 
-      # 步骤5：发布正版资源
-      - name: 发布正版资源
+      # 步骤5：发布更新包
+      - name: 发布到GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: MakeFontsGreatAgain-Updated.zip
           tag_name: ${{ github.ref_name }}
           body: |
-            ###  正版资源声明
-            本模块仅包含来自官方MFGA仓库的资源与合法替换的Roboto字体。
-            请遵循原始项目及Google的字体使用条款。
+            ###  自动构建的MFGA更新包
+            **包含以下修改：**
+            - 已更新最新Roboto系列字体
+            - 保留原始模块所有功能
+            - 构建时间: ${{ github.run_attempt }} @ ${{ github.run_id }}
           overwrite: true
+          draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
