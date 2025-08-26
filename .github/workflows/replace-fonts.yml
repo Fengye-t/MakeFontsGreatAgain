@@ -2,94 +2,126 @@ name: 自动替换字体并发布Release（含数字Tag触发版）
 on:
   push:
     tags:
-      - '*[0-9]*'  # Tag中包含任意数字即触发（如v1.0、mfga2024、v3-beta等）
-  workflow_dispatch: # 保留手动触发，方便测试
+      - '*[0-9]*'  # Tag含数字即触发（如v1.0、mfga2024）
+  workflow_dispatch: # 手动触发测试
 
 jobs:
   replace-and-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 赋予发布Release的权限，避免token权限不足
     steps:
-      # 步骤1：检出仓库代码
+      # 步骤1：检出仓库代码（增加权限设置，避免目录权限异常）
       - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          persist-credentials: true  # 保留凭证，避免后续操作权限不足
 
-      # 步骤2：获取并解压最新Release的MFGA模块（筛选含MFGA的.zip）
+      # 步骤2：获取并解压最新MFGA模块（修复路径嵌套，明确定位字体目录）
       - name: 自动获取并下载最新MFGA模块
         run: |
-          # 获取最新Release中含"MFGA"关键词的.zip模块链接
+          # 1. 获取模块链接
           MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip") and contains("MFGA")) | .browser_download_url')
-          
-          # 校验模块链接有效性
           if [ -z "$MODULE_URL" ] || [ "$MODULE_URL" = "null" ]; then
-            echo "❌ 错误：最新Release中未找到含MFGA关键词的.zip模块"
+            echo "❌ 错误：未找到含MFGA关键词的.zip模块"
             exit 1
           fi
           echo "✅ 找到MFGA模块链接：$MODULE_URL"
-          
-          # 下载模块（带重试机制）
+
+          # 2. 下载模块（重试+文件大小校验，避免损坏）
           wget -O mfga-latest-module.zip "$MODULE_URL" --no-verbose --tries=3 --timeout=30
-          
-          # 安装7z并解压模块
-          sudo apt-get update && sudo apt-get install -y p7zip-full
-          7z x mfga-latest-module.zip -oextracted-latest-module
-          
-          # 验证字体目录存在
-          FONT_DIR="extracted-latest-module/system/fonts"
-          if [ ! -d "$FONT_DIR" ]; then
-            echo "❌ 错误：MFGA模块解压后未找到字体目录 $FONT_DIR"
+          if [ ! -f "mfga-latest-module.zip" ] || [ $(stat -c%s "mfga-latest-module.zip") -lt 1024 ]; then
+            echo "❌ 错误：模块下载不完整或损坏"
             exit 1
           fi
-          echo "✅ MFGA模块字体目录存在，文件列表："
-          ls -l "$FONT_DIR"
 
-      # 步骤3：替换特定Roboto字体文件（仅更新目标字体）
+          # 3. 安装7z并解压（用-exl排除系统链接文件，避免权限问题）
+          sudo apt-get update && sudo apt-get install -y p7zip-full
+          mkdir -p extracted-latest-module
+          7z x mfga-latest-module.zip -oextracted-latest-module -exl  # -exl排除符号链接，防止访问系统目录
+
+          # 4. 自动定位字体目录（解决模块内嵌套子目录问题）
+          FONT_DIR=$(find extracted-latest-module -type d -name "fonts" | grep "system/fonts" | head -n1)
+          if [ -z "$FONT_DIR" ]; then
+            echo "❌ 错误：未找到 system/fonts 目录，解压结构如下："
+            tree extracted-latest-module  # 打印目录树，辅助排查
+            exit 1
+          fi
+          echo "✅ 找到字体目录：$FONT_DIR"
+          echo "FONT_DIR=$FONT_DIR" >> $GITHUB_ENV  # 存入环境变量，后续复用
+
+      # 步骤3：替换特定Roboto字体文件（校验原始字体存在性，避免复制失败）
       - name: 替换特定Roboto字体文件
         run: |
-          EXTRACTED_FONT_DIR="extracted-latest-module/system/fonts"
           TARGET_FONT_DIR="system/fonts"
           mkdir -p "$TARGET_FONT_DIR"
+
+          # 校验原始模块中目标字体是否存在（防止模块更新导致字体名变更）
+          REQUIRED_FONTS=("RobotoFlex-Regular.ttf" "Roboto-Regular.ttf" "Roboto-Italic.ttf")
+          for FONT in "${REQUIRED_FONTS[@]}"; do
+            if [ ! -f "${{ env.FONT_DIR }}/$FONT" ]; then
+              echo "❌ 错误：原始模块缺失字体 $FONT"
+              exit 1
+            fi
+          done
+
+          # 复制目标字体（仅复制需要的3个，避免冗余文件）
+          cp -f "${{ env.FONT_DIR }}/RobotoFlex-Regular.ttf" "$TARGET_FONT_DIR/"
+          cp -f "${{ env.FONT_DIR }}/Roboto-Regular.ttf" "$TARGET_FONT_DIR/"
+          cp -f "${{ env.FONT_DIR }}/Roboto-Italic.ttf" "$TARGET_FONT_DIR/"
           
-          # 仅复制3个特定Roboto字体
-          cp -f "$EXTRACTED_FONT_DIR/RobotoFlex-Regular.ttf" "$TARGET_FONT_DIR/"
-          cp -f "$EXTRACTED_FONT_DIR/Roboto-Regular.ttf" "$TARGET_FONT_DIR/"
-          cp -f "$EXTRACTED_FONT_DIR/Roboto-Italic.ttf" "$TARGET_FONT_DIR/"
-          
-          echo "✅ 特定Roboto字体替换完成，目标目录文件："
+          echo "✅ 字体替换完成，目标目录文件："
           ls -l "$TARGET_FONT_DIR"
 
-      # 步骤4：构建模块压缩包（保留原始文件，仅更新字体）
-      - name: 构建MFGA更新包
+      # 步骤4：构建MFGA更新包（核心修复：权限+路径+排除无效文件）
+      - name: 构建MFGA更新包（修复权限与路径问题）
         run: |
           MODULE_NAME="MakeFontsGreatAgain-Updated.zip"
-          
-          # 解压原始模块到临时目录（保留所有文件）
-          mkdir -p temp-original-module
-          7z x mfga-latest-module.zip -otemp-original-module
-          
-          # 覆盖字体文件（仅更新字体，其他文件不变）
-          cp -rf "$TARGET_FONT_DIR"/* "temp-original-module/system/fonts/"
-          
-          # 重新打包
-          cd temp-original-module
-          zip -r "../$MODULE_NAME" ./*
+          # 自动定位模块根目录（含system、META-INF的目录，避免嵌套）
+          MODULE_ROOT=$(dirname "${{ env.FONT_DIR }}/..")  # 从fonts目录向上两级找根目录
+          if [ ! -d "$MODULE_ROOT/system" ] || [ ! -d "$MODULE_ROOT/META-INF" ]; then
+            echo "❌ 错误：未找到模块根目录，当前结构："
+            tree "$(dirname "${{ env.FONT_DIR }}")"
+            exit 1
+          fi
+          echo "✅ 找到模块根目录：$MODULE_ROOT"
+
+          # 1. 创建临时目录，复制原始模块所有文件（加sudo确保权限，排除符号链接）
+          mkdir -p temp-build
+          sudo cp -rf --no-preserve=mode "$MODULE_ROOT"/* temp-build/  # --no-preserve=mode重置权限，避免只读
+          sudo chmod -R 755 temp-build/  # 赋予临时目录读写权限，防止复制时权限被拒
+
+          # 2. 覆盖字体文件（用步骤3的目标字体，加-f强制覆盖）
+          sudo cp -f "$TARGET_FONT_DIR"/* "temp-build/system/fonts/"
+
+          # 3. 重新打包（排除隐藏文件和系统文件，避免压缩无效内容）
+          cd temp-build
+          zip -r "../$MODULE_NAME" ./* -x ".*" -x "__MACOSX/*"  # 排除隐藏文件和mac系统文件
           cd ..
-          
-          echo "✅ MFGA更新包构建完成：$MODULE_NAME"
-          # 验证关键文件
-          echo "📁 验证更新包内容："
+
+          # 4. 校验打包结果（确保文件有效）
+          if [ ! -f "$MODULE_NAME" ] || [ $(stat -c%s "$MODULE_NAME") -lt 1024 ]; then
+            echo "❌ 错误：更新包构建失败或文件损坏"
+            exit 1
+          fi
+          sudo chmod 644 "$MODULE_NAME"  # 重置包文件权限，方便后续发布
+          echo "✅ MFGA更新包构建完成：$MODULE_NAME（大小：$(stat -c%s "$MODULE_NAME") 字节）"
+          # 验证包内关键文件
+          echo "📁 包内关键文件验证："
           unzip -l "$MODULE_NAME" | grep -E "Roboto|system/fonts|META-INF"
 
-      # 步骤5：发布到关联Tag的Release
+      # 步骤5：发布到关联Tag的Release（增加重试，避免网络波动失败）
       - name: 发布更新包到GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: "MakeFontsGreatAgain-Updated.zip"
-          tag_name: ${{ github.ref_name }}  # 自动关联触发工作流的Tag
+          tag_name: ${{ github.ref_name }}
           append_body: |
             ### 📦 自动更新说明
             - 仅更新 **Roboto系列字体**（RobotoFlex-Regular.ttf、Roboto-Regular.ttf、Roboto-Italic.ttf）
             - 保留原始MFGA模块所有文件结构，无额外修改
+          retry-count: 3  # 发布失败时重试3次
+          retry-delay: 10  # 重试间隔10秒
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
