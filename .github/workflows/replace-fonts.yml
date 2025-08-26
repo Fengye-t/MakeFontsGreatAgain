@@ -87,8 +87,8 @@ jobs:
 
           # 临时目录+权限处理
           mkdir -p temp-build
-          # 添加 -r 选项支持递归复制目录
-          sudo cp -rf --no-preserve=mode "$MODULE_ROOT"/* temp-build/
+          # 添加 -R 选项支持递归复制目录
+          sudo cp -R --no-preserve=mode "$MODULE_ROOT"/* temp-build/
           sudo chmod -R 755 temp-build/
 
           # 覆盖字体
