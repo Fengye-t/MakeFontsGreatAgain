@@ -1,4 +1,4 @@
-name: 自动替换字体并发布Release（修正版）
+name: 自动替换字体并发布Release（修正版，7z解压）
 on:
   push:
     tags:
@@ -19,8 +19,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: true
 
-      # 步骤2：获取并解压最新MFGA模块
-      - name: 下载并解压官方MFGA模块
+      # 步骤2：获取并解压最新MFGA模块（使用7-Zip）
+      - name: 下载并解压官方MFGA模块（7z）
         run: |
           # 1. 获取最新模块下载链接
           MODULE_URL=$(curl -s "https://api.github.com/repos/Fengye-t/MakeFontsGreatAgain/releases/latest" | \
@@ -39,11 +39,14 @@ jobs:
             exit 1
           fi
           
-          # 3. 解压模块
-          sudo apt-get update && sudo apt-get install -y unzip
-          unzip mfga-module.zip -d extracted-module
+          # 3. 安装7-Zip
+          sudo apt-get update && sudo apt-get install -y p7zip-full
           
-          # 4. 定位字体目录
+          # 4. 用7z解压模块
+          mkdir -p extracted-module
+          7z x mfga-module.zip -oextracted-module
+          
+          # 5. 定位字体目录
           FONT_DIR=$(find extracted-module -type d -name "fonts" -path "*/system/fonts" | head -n1)
           if [ -z "$FONT_DIR" ]; then
             echo " 错误：未找到字体目录，解压结构："
