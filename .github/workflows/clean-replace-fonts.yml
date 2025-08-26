@@ -1,6 +1,6 @@
 name: Clean Replace Fonts Workflow Runs
 on:
-  # 手动触发（在 GitHub Actions 页面点击运行）
+  # 仅保留手动触发（在 GitHub Actions 页面点击运行）
   workflow_dispatch:
     inputs:
       # 可输入要保留的最新运行数量，默认为 5
@@ -8,9 +8,6 @@ on:
         description: 'Number of latest runs to keep'
         required: false
         default: '5'
-  # 也可配置定时触发，比如每天凌晨 2 点运行
-  # schedule:
-  #   - cron: '0 2 * * *'
 
 jobs:
   clean-workflow-runs:
