@@ -17,7 +17,7 @@ on:
         default: 7
       dry_run:
         type: boolean
-        description: "是否开启模拟清理？"
+        description: "是否开启模拟清理？（仅展示待清理记录，不实际删除）"
         required: true
         default: false
 
@@ -47,10 +47,8 @@ jobs:
         id: validate_days
         run: |
           DAYS_OLD=${{ github.event.inputs.days_old }}
-          # 转换为整数（舍去小数部分）
           INT_DAYS=$(printf "%.0f" "$DAYS_OLD")
           
-          # 校验是否为非负整数
           if ! [[ "$INT_DAYS" =~ ^[0-9]+$ ]] || [ "$INT_DAYS" -lt 0 ]; then
             echo "❌ 错误：days_old 必须为非负整数，当前值：$DAYS_OLD"
             exit 1
@@ -72,29 +70,32 @@ jobs:
             echo "📅 清理时间范围：$(date -d "@$SINCE" +"%Y-%m-%d %H:%M:%S") 之前的 ${STATUS} 记录"
           fi
 
-      - name: 获取待清理的工作流记录 ID
+      - name: 获取待清理的工作流记录 ID（修复 jq 正则转义）
         id: get_run_ids
         run: |
           OWNER=${{ github.repository_owner }}
           REPO=${{ github.event.repository.name }}
           WORKFLOW_FILE="replace-fonts.yml"
 
+          # 1. 获取 replace-fonts.yml 的工作流 ID
           WORKFLOW_ID=$(gh api repos/$OWNER/$REPO/actions/workflows --jq ".workflows[] | select(.path == \".github/workflows/$WORKFLOW_FILE\") | .id")
           if [ -z "$WORKFLOW_ID" ]; then
             echo "❌ 错误：未找到工作流文件 .github/workflows/$WORKFLOW_FILE"
             exit 1
           fi
-          echo "✅ 找到工作流 ID：$WORKFLOW_ID"
+          echo "✅ 找到 replace-fonts.yml 工作流 ID：$WORKFLOW_ID"
 
+          # 2. 获取符合条件的记录 ID（修复 jq 正则转义，直接用 "+" 匹配）
+          echo "🔍 正在查询 ${STATUS} 且时间在 $(date -d "@${{ env.SINCE }}" +"%Y-%m-%d") 之前的工作流记录..."
           RUN_IDS=$(gh api repos/$OWNER/$REPO/actions/workflows/$WORKFLOW_ID/runs \
             --paginate \
-            --jq "[.workflow_runs[] | select(.conclusion == \"${{ env.STATUS }}\" and .created_at | sub(\"\\+.*\";\"\") | strptime(\"%Y-%m-%dT%H:%M:%S\") | mktime < ${{ env.SINCE }}) | .id] | join(\" \")")
+            --jq "[.workflow_runs[] | select(.conclusion == \"${{ env.STATUS }}\" and .created_at | sub(\"\\+.*\"; \"\") | strptime(\"%Y-%m-%dT%H:%M:%S\") | mktime < ${{ env.SINCE }}) | .id] | join(\" \")")
 
           if [ -z "$RUN_IDS" ] || [ "$RUN_IDS" = "[]" ]; then
-            echo "ℹ️ 未找到符合条件的记录"
+            echo "ℹ️ 未找到符合条件的工作流记录，无需清理"
             echo "RUN_IDS=" >> $GITHUB_ENV
           else
-            echo "✅ 找到 $(echo $RUN_IDS | wc -w) 条待清理记录"
+            echo "✅ 找到 $(echo $RUN_IDS | wc -w) 条待清理记录，ID：$RUN_IDS"
             echo "RUN_IDS=$RUN_IDS" >> $GITHUB_ENV
           fi
 
@@ -108,29 +109,36 @@ jobs:
 
           echo "========================================"
           if [ "$DRY_RUN" = "true" ]; then
-            echo "📝 模拟清理模式"
+            echo "📝 开启模拟清理模式，仅展示操作，不实际删除"
           else
-            echo "⚠️ 实际清理模式"
+            echo "⚠️ 开启实际清理模式，将删除以下工作流记录"
           fi
           echo "========================================"
 
+          # 循环处理每条待清理记录
           for ID in "${RUN_IDS[@]}"; do
+            # 获取记录的创建时间和运行编号
             RUN_INFO=$(gh api repos/$OWNER/$REPO/actions/runs/$ID --jq "{created_at: .created_at, run_number: .run_number}")
             CREATED_AT=$(echo $RUN_INFO | jq -r .created_at | sed 's/T/ /; s/Z//')
             RUN_NUMBER=$(echo $RUN_INFO | jq -r .run_number)
 
             if [ "$DRY_RUN" = "true" ]; then
-              echo "✅ 模拟清理：#$RUN_NUMBER（ID：$ID），创建时间：$CREATED_AT"
+              echo "✅ 模拟清理：记录编号 $RUN_NUMBER（ID：$ID），创建时间：$CREATED_AT"
             else
-              echo "🗑️ 清理中：#$RUN_NUMBER（ID：$ID），创建时间：$CREATED_AT"
+              echo "🗑️ 正在清理：记录编号 $RUN_NUMBER（ID：$ID），创建时间：$CREATED_AT"
+              # 实际删除工作流记录
               gh api repos/$OWNER/$REPO/actions/runs/$ID -X DELETE --confirm
-              echo "✅ 清理完成：ID $ID"
+              if [ $? -eq 0 ]; then
+                echo "✅ 清理成功：记录 ID $ID"
+              else
+                echo "❌ 清理失败：记录 ID $ID"
+              fi
             fi
           done
 
           echo "========================================"
           if [ "$DRY_RUN" = "true" ]; then
-            echo "📝 模拟清理完成，共 ${#RUN_IDS[@]} 条记录"
+            echo "📝 模拟清理完成，共处理 $(echo $RUN_IDS | wc -w) 条记录（未实际删除）"
           else
-            echo "✅ 实际清理完成，共 ${#RUN_IDS[@]} 条记录"
+            echo "✅ 实际清理完成，共处理 $(echo $RUN_IDS | wc -w) 条记录"
           fi
